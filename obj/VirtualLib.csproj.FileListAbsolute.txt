@@ -1,0 +1,15 @@
+F:\AutoInstallProject\FlyInstall\VirtualLib\obj\Debug\ResolveAssemblyReference.cache
+F:\AutoInstallProject\FlyInstall\VirtualLib\obj\Debug\VirtualLib.Properties.Resources.resources
+F:\AutoInstallProject\FlyInstall\VirtualLib\obj\Debug\VirtualLib.csproj.GenerateResource.Cache
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\VirtualLib.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\VirtualLib.pdb
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\AppUtil.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\Vestris.VMWareLib.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\Vim25Service2005.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\Vim25Service2005.XmlSerializers.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\VimService2005.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\VimService2005.XmlSerializers.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\Interop.VixCOM.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\bin\Debug\AppUtil.pdb
+F:\AutoInstallProject\FlyInstall\VirtualLib\obj\Debug\VirtualLib.dll
+F:\AutoInstallProject\FlyInstall\VirtualLib\obj\Debug\VirtualLib.pdb
