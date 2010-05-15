@@ -62,9 +62,10 @@
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\..\SDK\samples\DotNet\VimService2005.XmlSerializers.dll</HintPath>
     </Reference>
+    <Reference Include="VMware.Security.CredentialStore, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Program.cs" />
+    <Compile Include="VirtualLib.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
