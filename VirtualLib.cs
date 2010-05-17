@@ -93,7 +93,7 @@ namespace VirtualLib
         public bool deploy(VM guest)
         {
             cb = AppUtil.AppUtil.initialize("VMDeploy", this.connectString);
-            cb.connect();
+            cb.connect();            
             /************Start Deploy Code*****************/
             _service = cb.getConnection()._service;
             _sic = cb.getConnection()._sic;
@@ -462,7 +462,7 @@ namespace VirtualLib
             this.domainAdmin = domainAdmin;
             this.domainPassword = domainPassword;
             this.joinDomain = joinDomain;
-            this.productId = CommonInfo.getProductId(this.templateName);
+            this.productId = productId;
             this.vmPath = "/" + this.hostRef.getDataCenter() +"/vm/" + this.templateName;
             this.storageLocation = "[LocalDataStore] " + this.name + "/" + this.name + ".vmx";
             
@@ -623,7 +623,74 @@ namespace VirtualLib
                 return users[0];
             }
         }
-        
+
+        public bool copyRequiredFilesToVM(string ePOZip, string agentZip, string zipExe)
+        {
+            //Files to copy
+            // 1. ePO Build
+            // 2. agent and test files
+            // 3. uzext unzipper
+
+            string batchFilePath = @"f:\autoinstallproject\temp\unzip.bat";
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                if (File.Exists(ePOZip) && File.Exists(agentZip) && File.Exists(zipExe))
+                {
+                    virtualMachine.CopyFileFromHostToGuest(ePOZip, @"c:\epo.zip");
+                    virtualMachine.CopyFileFromHostToGuest(agentZip, @"C:\agent.zip");
+                    virtualMachine.CopyFileFromHostToGuest(zipExe, @"C:\uzext.exe");
+                    System.Threading.Thread.Sleep(5000);
+
+                    //Construct batchfile for unzipping
+                    //G:\test>uzext -e -o -d -pc:\epo c:\epo.zip
+                    string[] zipCommands = new string[2];
+                    zipCommands[0] = @"c:\uzext.exe -e -o -d -pc:\epo c:\epo.zip";
+                    zipCommands[1] = @"c:\uzext.exe -e -o -d -pc:\agent c:\agent.zip";
+
+                    System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
+                    StreamWriter sw = fi.CreateText();
+                    sw.WriteLine(zipCommands[0]);
+                    sw.WriteLine(zipCommands[1]);
+                    sw.Close();
+
+                    virtualMachine.CopyFileFromHostToGuest(batchFilePath, @"c:\unzip.bat");
+                    virtualMachine.RunProgramInGuest(@"c:\unzip.bat");
+                    //wait 60 seconds for unzipping to comlete
+                    System.Threading.Thread.Sleep(60000);
+                    return true;
+                    virtualMachine.LogoutFromGuest();
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+
+        public void startAgent()
+        {
+            string batchFilePath = @"f:\autoinstallproject\temp\runagent.bat";
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                string runAgentBatch = @"c:\agent\agent.exe agent.conf";
+
+                System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
+                StreamWriter sw = fi.CreateText();
+                sw.WriteLine(runAgentBatch);                
+                sw.Close();
+
+                virtualMachine.CopyFileFromHostToGuest(runAgentBatch, @"c:\runagent.bat");
+                virtualMachine.RunProgramInGuest(@"c:\runagent.bat");
+                //wait 5 seconds for agent to start
+                System.Threading.Thread.Sleep(5000);
+                virtualMachine.LogoutFromGuest();
+            }
+        }
+
 
         public bool isLoggedIn()
         {
