@@ -489,6 +489,7 @@ namespace VirtualLib
                     // Build reg file to change autologon settings to domain
                     string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
                     string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[]{'.'})[0];
+                    string disableScreenSaverKey = ">reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
                     string shutdownKey = "shutdown -r -t 00 -c \"Rebooting computer\"";
 
                     //Build a file containing the domain settings
@@ -496,7 +497,8 @@ namespace VirtualLib
                     StreamWriter sw = fi.CreateText();
                     sw.WriteLine(deleteKey);
                     sw.WriteLine(addKey);
-                    sw.WriteLine(shutdownKey);                    
+                    sw.WriteLine(shutdownKey);   
+                    sw.WriteLine(disableScreenSaverKey);
                     sw.Close();
 
                     //Copy said file guest
@@ -676,14 +678,14 @@ namespace VirtualLib
             using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
             {
                 virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
-                string runAgentBatch = @"c:\agent\agent.exe agent.conf";
+                string runAgentBatch = @"start c:\agent\agent.exe c:\agent\agent.conf";
 
                 System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
                 StreamWriter sw = fi.CreateText();
                 sw.WriteLine(runAgentBatch);                
                 sw.Close();
 
-                virtualMachine.CopyFileFromHostToGuest(runAgentBatch, @"c:\runagent.bat");
+                virtualMachine.CopyFileFromHostToGuest(batchFilePath, @"c:\runagent.bat");
                 virtualMachine.RunProgramInGuest(@"c:\runagent.bat");
                 //wait 5 seconds for agent to start
                 System.Threading.Thread.Sleep(5000);
