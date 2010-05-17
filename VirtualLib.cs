@@ -558,9 +558,7 @@ namespace VirtualLib
                 catch (Exception e)
                 {
                     return null;
-                }
-
-                VMWareVirtualMachine.Process vp;
+                }                
 
                 try
                 {
@@ -581,8 +579,20 @@ namespace VirtualLib
                     return null;
                 }
 
-                          
-                virtualMachine.RunProgramInGuest(@"c:\getuser.bat");
+
+                try
+                {
+                    VMWareVirtualMachine.Process vp = virtualMachine.RunProgramInGuest(@"c:\getuser.bat");
+                    if (vp.ExitCode == -1)
+                    {
+                        return null;
+                    }
+                }
+                catch (Exception e)
+                {
+                    return null;
+                }
+
                 System.Threading.Thread.Sleep(5000); //Wait 5 seconds
                 virtualMachine.CopyFileFromGuestToHost(@"c:\user.txt", localUserFileName);
 
