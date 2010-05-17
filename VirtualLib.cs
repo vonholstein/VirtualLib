@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections;
 using System.Windows.Forms;
+using System.IO;
 using Vestris.VMWareLib;
 using AppUtil;
 using VimApi;
@@ -65,8 +66,7 @@ namespace VirtualLib
             this.userName = userName;
             this.password = password;
             vixhost = new VMWareVirtualHost();
-            vixhost.ConnectToVMWareVIServer("localhost:4443",this.userName,this.password);
-            
+            vixhost.ConnectToVMWareVIServer("localhost:4443",this.userName,this.password);                    
         }
 
         //Destructor
@@ -90,7 +90,7 @@ namespace VirtualLib
         //    return handle;
         //}
 
-        public void deploy(VM guest)
+        public bool deploy(VM guest)
         {
             cb = AppUtil.AppUtil.initialize("VMDeploy", this.connectString);
             cb.connect();
@@ -114,7 +114,7 @@ namespace VirtualLib
             if (datacenterRef == null)
             {
                 Console.WriteLine("The specified datacenter is not found");
-                return;
+                return false;
             }
 
             // Find the virtual machine folder for this datacenter.
@@ -122,14 +122,14 @@ namespace VirtualLib
             if (vmFolderRef == null)
             {
                 Console.WriteLine("The virtual machine is not found");
-                return;
+                return false;
             }
 
             vmRef = _service.FindByInventoryPath(_sic.searchIndex, guest.getVmPath());
             if (vmRef == null)
             {
                 Console.WriteLine("The virtual machine is not found");
-                return;
+                return false;
             }
 
             // Code for obtaining managed object reference to resource root
@@ -143,7 +143,7 @@ namespace VirtualLib
                 if (hostmor == null)
                 {
                     Console.WriteLine("Host " + this.hostName + " not found");
-                    return;
+                    return false;
                 }
             }
             else
@@ -176,7 +176,7 @@ namespace VirtualLib
             if (crmor == null)
             {
                 Console.WriteLine("No Compute Resource Found On Specified Host");
-                return;
+                return false;
             }
             resourcePool = cb.getServiceUtil().GetMoRefProp(crmor, "resourcePool");
 
@@ -315,23 +315,32 @@ namespace VirtualLib
                 if (status.Equals("failure"))
                 {
                     Console.WriteLine("Failure -: Virtual Machine cannot be cloned");
+                    return false;
                 }
                 if (status.Equals("sucess"))
                 {
                     Console.WriteLine("Virtual Machine Cloned  successfully.");
+                    return true;
                 }
                 else
                 {
                     Console.WriteLine("Virtual Machine Cloned cannot be cloned");
+                    return false;
                 }
             }
             catch (Exception e)
             {
+                Console.WriteLine(e.Message);
+                return false;
 
-            }        
+            }
+            finally
+            {
+                cb.disConnect();
+            }
             /************End Deploy Code*******************/
-            cb.disConnect();
             
+            return true;
         }
     } 
 
@@ -455,25 +464,184 @@ namespace VirtualLib
             this.joinDomain = joinDomain;
             this.productId = CommonInfo.getProductId(this.templateName);
             this.vmPath = "/" + this.hostRef.getDataCenter() +"/vm/" + this.templateName;
+            this.storageLocation = "[LocalDataStore] " + this.name + "/" + this.name + ".vmx";
             
         }
 
-        public void loginToMachine()
+        public void setAutoLoginToDomainAndRestart()
         {
-            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation))
+            // Create registry strings
+            // Create batch file with the strings
+            // Copy file to vm
+            // Execute file
+            
+            System.IO.FileInfo fi;
+            string fileName = new Random().Next(100000000, 999999999).ToString() + ".bat";
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
             {
-                // power on this virtual machine
-                virtualMachine.PowerOn();
-                // wait for VMWare Tools
-                virtualMachine.WaitForToolsInGuest();
-                // login to the virtual machine
-                virtualMachine.LoginInGuest("Administrator", "password");
-                // run notepad
-                virtualMachine.RunProgramInGuest("notepad.exe", string.Empty);
-                // power off
-                virtualMachine.PowerOff();                
+                if (virtualMachine.IsRunning)
+                {
+                    virtualMachine.WaitForToolsInGuest();
+                    //virtualMachine.LoginInGuest(this.getJoinDomain().Split(new char[] { '.' })[0] + "\\" + this.getDomainAdmin(), this.getDomainPassword());
+                    virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+
+                    // Build reg file to change autologon settings to domain
+                    string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
+                    string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[]{'.'})[0];
+                    string shutdownKey = "shutdown -r -t 00 -c \"Rebooting computer\"";
+
+                    //Build a file containing the domain settings
+                    fi = new System.IO.FileInfo(@"c:\windows\temp\" + fileName);
+                    StreamWriter sw = fi.CreateText();
+                    sw.WriteLine(deleteKey);
+                    sw.WriteLine(addKey);
+                    sw.WriteLine(shutdownKey);                    
+                    sw.Close();
+
+                    //Copy said file guest
+                    virtualMachine.CopyFileFromHostToGuest(@"c:\windows\temp\" + fileName, @"c:\" + fileName);
+                    virtualMachine.RunProgramInGuest(@"c:\" + fileName, "");
+                    System.Threading.Thread.Sleep(5000); // wait 5 seconds for script to run
+                    //virtualMachine.ShutdownGuest();
+
+                    //Wait every two seconds and check power state until machine is powered off
+                    /*
+                    while (virtualMachine.IsRunning == true)
+                    {
+                        System.Threading.Thread.Sleep(2000);
+                    }
+                    */
+
+                    //virtualMachine.PowerOn();
+                    virtualMachine.WaitForToolsInGuest();
+                    System.Threading.Thread.Sleep(20000); // wait 20 seconds for personal settings to apply
+                    virtualMachine.LogoutFromGuest();                    
+                }                
             }
         }
+
+        public void waitForLogon(int timeout)
+        {
+            string commandString = @"C:\psloggedon.exe -accepteula -l > user.txt";
+            string fileName = this.name + @"\user.txt";
+            int count = 0;
+            string currentUser = this.getCurrentUser();
+
+            while( (currentUser == null || currentUser.Equals("System")) & count < timeout)
+            {
+                ++count;
+                System.Threading.Thread.Sleep(10000);
+                currentUser = this.getCurrentUser();
+            }
+        }
+
+        public string getCurrentUser()
+        {            
+            string program = @"c:\psloggedon.exe  -accepteula -l > c:\user.txt";           
+            
+            string batchFileName = this.name + @"user.bat";
+            string batchFilePath = @"c:\windows\temp\";
+            string localUserFileName = @"c:\windows\temp\" + this.name + "user.txt";
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                if (!virtualMachine.IsRunning)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                }
+                catch (Exception e)
+                {
+                    return null;
+                }
+
+                VMWareVirtualMachine.Process vp;
+
+                try
+                {
+                    if(!virtualMachine.FileExistsInGuest(@"c:\getuser.bat"))
+                    {
+                        virtualMachine.CopyFileFromHostToGuest(@"f:\autoinstallproject\psloggedon.exe", @"c:\psloggedon.exe", 10);
+                        //Build a batch file containing the psloggedon command
+                        System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath + batchFileName);
+                        StreamWriter sw = fi.CreateText();
+                        sw.WriteLine(program);
+                        sw.Close();
+                        virtualMachine.CopyFileFromHostToGuest(batchFilePath + batchFileName, @"c:\getuser.bat");                
+                    }
+                }
+                catch(Exception e)
+                {
+                    Console.WriteLine(e.Message);
+                    return null;
+                }
+
+                          
+                virtualMachine.RunProgramInGuest(@"c:\getuser.bat");
+                System.Threading.Thread.Sleep(5000); //Wait 5 seconds
+                virtualMachine.CopyFileFromGuestToHost(@"c:\user.txt", localUserFileName);
+
+                FileStream fs = new FileStream(localUserFileName, FileMode.Open, FileAccess.Read);
+                StreamReader sr = new StreamReader(fs);
+                string con = sr.ReadToEnd().ToLower();
+                //int lastSpaceIndex = con.Trim().LastIndexOf(' ');
+                //string user = con.Substring(lastSpaceIndex, con.Length-1).Trim();
+                //There should be two user entries, one for current session and one interactive
+
+                string[] userEntries = con.Split(new char[] { '\n' });
+                string[] users = new string[5];
+
+                foreach (string s in userEntries)
+                {
+                    if (s.IndexOf('\\') > -1) // if current line is a user entry
+                    {
+                        if (s.IndexOf("unknown time") == -1) // skip entry for api user
+                        {
+                            //get user name
+                            int lastTabIndex = s.LastIndexOf("\t"); //username is delimited by a \t and \r
+                            users[0] = s.Substring(lastTabIndex).Trim();
+                        }
+                    }
+                }
+
+                virtualMachine.LogoutFromGuest();                
+                return users[0];
+            }
+        }
+        
+
+        public bool isLoggedIn()
+        {
+            bool directoryExists = false;
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                if (virtualMachine.IsRunning)
+                {
+                    virtualMachine.WaitForToolsInGuest();
+                    //virtualMachine.LoginInGuest(this.getJoinDomain().Split(new char[] { '.' })[0] + "\\" + this.getDomainAdmin(), this.getDomainPassword());
+                    if (this.joinDomain == null)
+                    {
+                        virtualMachine.LoginInGuest(this.domainAdmin, this.domainPassword);
+                    }
+                    else
+                    {
+                        virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                    }
+                        
+                    //Check for existence of Windows directory, if it returns true then guest is logged in
+                    directoryExists = virtualMachine.DirectoryExistsInGuest(@"C:\Windows");
+                    virtualMachine.LogoutFromGuest();                    
+                }
+                return directoryExists;                
+            }
+        }
+
 
         public bool login()
         {
@@ -483,8 +651,9 @@ namespace VirtualLib
                 {
                     virtualMachine.WaitForToolsInGuest();
                     //virtualMachine.LoginInGuest(this.getJoinDomain().Split(new char[] { '.' })[0] + "\\" + this.getDomainAdmin(), this.getDomainPassword());
-                    virtualMachine.LoginInGuest("administrator", "Yv74aL5j");                    
-                    virtualMachine.CreateDirectoryInGuest("c:\\testdirectory");
+                    virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                    //Wait a period for login to complete
+                    System.Threading.Thread.Sleep(10000);
                     return true;
                 }
                 return false;
@@ -498,9 +667,14 @@ namespace VirtualLib
                 // power on this virtual machine
                 if (!virtualMachine.IsRunning)
                 {
-                    virtualMachine.PowerOn();
+                    virtualMachine.PowerOn();                    
                 }
             }
+        }
+
+        public bool deploy()
+        {
+            return hostRef.deploy(this);
         }
 
     }
@@ -510,7 +684,7 @@ namespace VirtualLib
         public Win2003VM(VMHost hostRef)
             : base(hostRef)
         {
-            this.autoLogonCount = "2";
+            this.autoLogonCount = "4";
         }      
     }
 
@@ -519,7 +693,7 @@ namespace VirtualLib
         public Win2008VM(VMHost hostRef)
             : base(hostRef)
         {
-            this.autoLogonCount = "1";
+            this.autoLogonCount = "4";
         }
     }    
 }
