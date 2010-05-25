@@ -468,9 +468,12 @@ namespace VirtualLib
             
         }
 
-        public void setAutoLoginToDomainAndRestart()
+        public virtual void stage()
         {
-            // Create registry strings
+            // Create registry strings to:
+            // 1. Setup autologon settings to domain
+            // 2. Startup agent on reboot
+            // Add shutdown command
             // Create batch file with the strings
             // Copy file to vm
             // Execute file
@@ -489,22 +492,28 @@ namespace VirtualLib
                     // Build reg file to change autologon settings to domain
                     string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
                     string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[]{'.'})[0];
-                    string disableScreenSaverKey = ">reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
-                    string shutdownKey = "shutdown -r -t 00 -c \"Rebooting computer\"";
+                    string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    //string startAgent = "cmd /C \"start c:\\agent\\agent.exe c:\\agent\\agent.conf";
+                    string startAgent = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"StartAgent\" /t REG_SZ /d \"cmd /C start c:\\agent\\agent.exe c:\\agent\\agent.conf";
+                    string sqlAdminAdd = "sqlcmd -S localhost\\SQL2008 -U sa -P sa -Q \"EXEC master..sp_addsrvrolemember @loginame = N'" + this.joinDomain + "\\" + this.domainAdmin + "', @rolename = N'sysadmin'";
+                    string shutdownKey = "shutdown -r -t 10 -c \"Rebooting computer\"";
 
                     //Build a file containing the domain settings
                     fi = new System.IO.FileInfo(@"c:\windows\temp\" + fileName);
                     StreamWriter sw = fi.CreateText();
                     sw.WriteLine(deleteKey);
                     sw.WriteLine(addKey);
+                    sw.WriteLine(disableScreenSaverKey);
+                    sw.WriteLine(startAgent);                    
                     sw.WriteLine(shutdownKey);   
                     sw.WriteLine(disableScreenSaverKey);
                     sw.Close();
 
                     //Copy said file guest
                     virtualMachine.CopyFileFromHostToGuest(@"c:\windows\temp\" + fileName, @"c:\" + fileName);
+                    System.Threading.Thread.Sleep(2000); // wait 2 seconds for copy
                     virtualMachine.RunProgramInGuest(@"c:\" + fileName, "");
-                    System.Threading.Thread.Sleep(5000); // wait 5 seconds for script to run
+                    virtualMachine.LogoutFromGuest(); 
                     //virtualMachine.ShutdownGuest();
 
                     //Wait every two seconds and check power state until machine is powered off
@@ -515,11 +524,30 @@ namespace VirtualLib
                     }
                     */
 
-                    //virtualMachine.PowerOn();
-                    virtualMachine.WaitForToolsInGuest();
-                    System.Threading.Thread.Sleep(20000); // wait 20 seconds for personal settings to apply
-                    virtualMachine.LogoutFromGuest();                    
+                    //virtualMachine.PowerOn();                                                                            
                 }                
+            }
+            //Wait 20 seconds for reboot
+            System.Threading.Thread.Sleep(20000);
+
+            //Creating a connection again for running the batch script, for some reason running the batch within the previous block causes a timeout
+            //using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            //{
+                //virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                //virtualMachine.WaitForToolsInGuest();                
+                //System.Threading.Thread.Sleep(15000); // wait 15 seconds for personal settings to apply and agent to start
+                //virtualMachine.LogoutFromGuest();
+            //}
+
+        }
+
+        public void delete()
+        {
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                virtualMachine.PowerOff();
+                System.Threading.Thread.Sleep(5000);
+                virtualMachine.Delete();
             }
         }
 
@@ -534,17 +562,27 @@ namespace VirtualLib
             {
                 ++count;
                 System.Threading.Thread.Sleep(10000);
-                currentUser = this.getCurrentUser();
+
+                try
+                {
+                    currentUser = this.getCurrentUser();
+                }
+                catch (Exception e)
+                {
+                    //Returned error, inconsequential for now, define various types of exceptions later
+                    // Retry
+                }
             }
         }
 
-        public string getCurrentUser()
+        public string getCurrentUser() 
         {            
             string program = @"c:\psloggedon.exe  -accepteula -l > c:\user.txt";           
             
             string batchFileName = this.name + @"user.bat";
-            string batchFilePath = @"c:\windows\temp\";
-            string localUserFileName = @"c:\windows\temp\" + this.name + "user.txt";
+            string batchFilePath = @"f:\autoinstallproject\temp\";
+            string localUserFileName = @"f:\autoinstallproject\temp\" + this.name + "user.txt";
+            string[] users;
 
             using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
             {
@@ -555,7 +593,7 @@ namespace VirtualLib
 
                 try
                 {
-                    virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                    virtualMachine.LoginInGuest("administrator", this.workGroupPassword);
                 }
                 catch (Exception e)
                 {
@@ -589,44 +627,50 @@ namespace VirtualLib
                     {
                         return null;
                     }
+                    System.Threading.Thread.Sleep(5000); //Wait 5 seconds
+
+                    virtualMachine.CopyFileFromGuestToHost(@"c:\user.txt", localUserFileName);
+
+                    FileStream fs = new FileStream(localUserFileName, FileMode.Open, FileAccess.Read);
+                    StreamReader sr = new StreamReader(fs);
+                    string con = sr.ReadToEnd().ToLower();
+                    //int lastSpaceIndex = con.Trim().LastIndexOf(' ');
+                    //string user = con.Substring(lastSpaceIndex, con.Length-1).Trim();              
+
+                    //close stream
+                    sr.Close();
+                    fs.Close();
+                    File.Delete(localUserFileName);
+                    //There should be two user entries, one for current session and one interactive
+                    string[] userEntries = con.Split(new char[] { '\n' });
+                    users = new string[5];
+
+                    foreach (string s in userEntries)
+                    {
+                        if (s.IndexOf('\\') > -1) // if current line is a user entry
+                        {
+                            if (s.IndexOf("unknown time") == -1) // skip entry for api user
+                            {
+                                //get user name
+                                int lastTabIndex = s.LastIndexOf("\t"); //username is delimited by a \t and \r
+                                users[0] = s.Substring(lastTabIndex).Trim();
+                            }
+                        }
+                    }
                 }
                 catch (Exception e)
                 {
                     return null;
                 }
-
-                System.Threading.Thread.Sleep(5000); //Wait 5 seconds
-                virtualMachine.CopyFileFromGuestToHost(@"c:\user.txt", localUserFileName);
-
-                FileStream fs = new FileStream(localUserFileName, FileMode.Open, FileAccess.Read);
-                StreamReader sr = new StreamReader(fs);
-                string con = sr.ReadToEnd().ToLower();
-                //int lastSpaceIndex = con.Trim().LastIndexOf(' ');
-                //string user = con.Substring(lastSpaceIndex, con.Length-1).Trim();
-                //There should be two user entries, one for current session and one interactive
-
-                string[] userEntries = con.Split(new char[] { '\n' });
-                string[] users = new string[5];
-
-                foreach (string s in userEntries)
-                {
-                    if (s.IndexOf('\\') > -1) // if current line is a user entry
-                    {
-                        if (s.IndexOf("unknown time") == -1) // skip entry for api user
-                        {
-                            //get user name
-                            int lastTabIndex = s.LastIndexOf("\t"); //username is delimited by a \t and \r
-                            users[0] = s.Substring(lastTabIndex).Trim();
-                        }
-                    }
-                }
-
-                virtualMachine.LogoutFromGuest();                
+                
                 return users[0];
             }
         }
 
-        public bool copyRequiredFilesToVM(string ePOZip, string agentZip, string zipExe)
+        public void getePOLogs()
+        {
+        }
+        public bool copyRequiredFilesToVM(string ePOZip, string agentZip, string testZip, string zipExe)
         {
             //Files to copy
             // 1. ePO Build
@@ -637,30 +681,34 @@ namespace VirtualLib
 
             using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
             {
-                virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
-                if (File.Exists(ePOZip) && File.Exists(agentZip) && File.Exists(zipExe))
+                //virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+                virtualMachine.LoginInGuest("administrator", this.workGroupPassword);
+                if (File.Exists(ePOZip) && File.Exists(agentZip) && File.Exists(zipExe) && File.Exists(zipExe))
                 {
                     virtualMachine.CopyFileFromHostToGuest(ePOZip, @"c:\epo.zip");
                     virtualMachine.CopyFileFromHostToGuest(agentZip, @"C:\agent.zip");
                     virtualMachine.CopyFileFromHostToGuest(zipExe, @"C:\uzext.exe");
+                    virtualMachine.CopyFileFromHostToGuest(testZip, @"C:\test.zip");
                     System.Threading.Thread.Sleep(5000);
 
                     //Construct batchfile for unzipping
                     //G:\test>uzext -e -o -d -pc:\epo c:\epo.zip
-                    string[] zipCommands = new string[2];
+                    string[] zipCommands = new string[3];
                     zipCommands[0] = @"c:\uzext.exe -e -o -d -pc:\epo c:\epo.zip";
                     zipCommands[1] = @"c:\uzext.exe -e -o -d -pc:\agent c:\agent.zip";
+                    zipCommands[2] = @"c:\uzext.exe -e -o -d -pc:\test c:\test.zip";
 
                     System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
                     StreamWriter sw = fi.CreateText();
                     sw.WriteLine(zipCommands[0]);
                     sw.WriteLine(zipCommands[1]);
+                    sw.WriteLine(zipCommands[2]);
                     sw.Close();
 
                     virtualMachine.CopyFileFromHostToGuest(batchFilePath, @"c:\unzip.bat");
                     virtualMachine.RunProgramInGuest(@"c:\unzip.bat");
                     //wait 60 seconds for unzipping to comlete
-                    System.Threading.Thread.Sleep(60000);
+                    //System.Threading.Thread.Sleep(60000);
                     return true;
                     virtualMachine.LogoutFromGuest();
                 }
@@ -678,7 +726,8 @@ namespace VirtualLib
             using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
             {
                 virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
-                string runAgentBatch = @"start c:\agent\agent.exe c:\agent\agent.conf";
+                //string runAgentBatch = @"start c:\agent\agent.exe c:\agent\agent.conf";
+                string runAgentBatch = "c:\\psexec.exe -d -u \"epontlmv2\\administrator\" -p \"Yv74aL5j\" c:\\agent\\agent.exe c:\\agent\\agent.conf";
 
                 System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
                 StreamWriter sw = fi.CreateText();
@@ -773,6 +822,90 @@ namespace VirtualLib
             : base(hostRef)
         {
             this.autoLogonCount = "4";
+        }        
+    }
+
+    public class Win2008R2VM : VM
+    {
+        public Win2008R2VM(VMHost hostRef)
+            : base(hostRef)
+        {
+            this.autoLogonCount = "4";
         }
-    }    
+
+        public override void stage()
+        {
+            // Create registry strings to:
+            // 1. Setup autologon settings to domain
+            // 2. Startup agent on reboot
+            // Add shutdown command
+            // Create batch file with the strings
+            // Copy file to vm
+            // Execute file
+
+            System.IO.FileInfo fi;
+            string fileName = new Random().Next(100000000, 999999999).ToString() + ".bat";
+
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                if (virtualMachine.IsRunning)
+                {
+                    virtualMachine.WaitForToolsInGuest();
+                    //virtualMachine.LoginInGuest(this.getJoinDomain().Split(new char[] { '.' })[0] + "\\" + this.getDomainAdmin(), this.getDomainPassword());
+                    virtualMachine.LoginInGuest("administrator", this.workGroupPassword);
+
+                    // Build reg file to change autologon settings to domain
+                    string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
+                    string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[] { '.' })[0];
+                    string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    //string startAgent = "cmd /C \"start c:\\agent\\agent.exe c:\\agent\\agent.conf";
+                    string startAgent = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"StartAgent\" /t REG_SZ /d \"cmd /C start c:\\agent\\agent.exe c:\\agent\\agent.conf";
+                    //string shutdownKey = "shutdown -r -t 10 -c \"Rebooting computer\"";
+                    string shutdownKey = "netdom join localhost /domain:" + this.joinDomain + " /userd:" + this.domainAdmin + " /passwordd:" + this.domainPassword + " /REboot:10";
+
+                    //Build a file containing the domain settings
+                    fi = new System.IO.FileInfo(@"c:\windows\temp\" + fileName);
+                    StreamWriter sw = fi.CreateText();
+                    sw.WriteLine(deleteKey);
+                    sw.WriteLine(addKey);
+                    sw.WriteLine(disableScreenSaverKey);
+                    sw.WriteLine(startAgent);
+                    sw.WriteLine(shutdownKey);
+                    sw.WriteLine(disableScreenSaverKey);
+                    sw.Close();
+
+                    //Copy said file guest
+                    virtualMachine.CopyFileFromHostToGuest(@"c:\windows\temp\" + fileName, @"c:\" + fileName);
+                    System.Threading.Thread.Sleep(2000); // wait 2 seconds for copy
+                    virtualMachine.RunProgramInGuest(@"c:\" + fileName, "");
+                    virtualMachine.LogoutFromGuest();
+                    //virtualMachine.ShutdownGuest();
+
+                    //Wait every two seconds and check power state until machine is powered off
+                    /*
+                    while (virtualMachine.IsRunning == true)
+                    {
+                        System.Threading.Thread.Sleep(2000);
+                    }
+                    */
+
+                    //virtualMachine.PowerOn();                                                                            
+                }
+            }
+            //Wait 20 seconds for reboot
+            System.Threading.Thread.Sleep(20000);
+
+            //Creating a connection again for running the batch script, for some reason running the batch within the previous block causes a timeout
+            //using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            //{
+            //virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
+            //virtualMachine.WaitForToolsInGuest();                
+            //System.Threading.Thread.Sleep(15000); // wait 15 seconds for personal settings to apply and agent to start
+            //virtualMachine.LogoutFromGuest();
+            //}
+
+        }
+
+    }
+
 }
