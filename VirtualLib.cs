@@ -29,7 +29,7 @@ namespace VirtualLib
         private string url;
         private string server;
         private string userName;
-        private string password;
+        private string password;        
 
         public VMWareVirtualHost vixhost;
 
@@ -37,6 +37,7 @@ namespace VirtualLib
         {
             return this.url;
         }
+        
 
         public string getUserName()
         {
@@ -363,11 +364,22 @@ namespace VirtualLib
         protected string vmPath;
         protected string[] guiRunOnce;
         protected string storageLocation;
+        protected string testname;
 
         public VM(VMHost hostRef)
         {
             this.hostRef = hostRef;
             
+        }
+
+        public string getTestName()
+        {
+            return this.testname;
+        }
+
+        public void setTestName(string testname)
+        {
+            this.testname = testname;
         }
 
         public string getName()
@@ -492,10 +504,11 @@ namespace VirtualLib
                     // Build reg file to change autologon settings to domain
                     string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
                     string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[]{'.'})[0];
-                    string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    //string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    string disableScreenSaverKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"ScreenSaveDisable\" /t REG_SZ /d \"reg add \\\"HKCU\\Control Panel\\Desktop\\\" /v \\\"ScreenSaveActive\\\" /t REG_SZ /d 0 /f\"";
                     //string startAgent = "cmd /C \"start c:\\agent\\agent.exe c:\\agent\\agent.conf";
                     string startAgent = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"StartAgent\" /t REG_SZ /d \"cmd /C start c:\\agent\\agent.exe c:\\agent\\agent.conf";
-                    string sqlAdminAdd = "sqlcmd -S localhost\\SQL2008 -U sa -P sa -Q \"EXEC master..sp_addsrvrolemember @loginame = N'" + this.joinDomain + "\\" + this.domainAdmin + "', @rolename = N'sysadmin'";
+                    string sqlAdminAdd = "sqlcmd -S localhost\\SQL2008 -U sa -P sa -Q \"EXEC master..sp_addsrvrolemember @loginame = N'" + this.joinDomain.Split(new char[] { '.' })[0] + "\\" + this.domainAdmin + "', @rolename = N'sysadmin'\"";
                     string shutdownKey = "shutdown -r -t 10 -c \"Rebooting computer\"";
 
                     //Build a file containing the domain settings
@@ -504,9 +517,9 @@ namespace VirtualLib
                     sw.WriteLine(deleteKey);
                     sw.WriteLine(addKey);
                     sw.WriteLine(disableScreenSaverKey);
-                    sw.WriteLine(startAgent);                    
-                    sw.WriteLine(shutdownKey);   
-                    sw.WriteLine(disableScreenSaverKey);
+                    sw.WriteLine(startAgent);
+                    sw.WriteLine(sqlAdminAdd);
+                    sw.WriteLine(shutdownKey);                       
                     sw.Close();
 
                     //Copy said file guest
@@ -573,7 +586,36 @@ namespace VirtualLib
                     // Retry
                 }
             }
+            //Wait 20 seconds and try again to see if system is still logged on
+            System.Threading.Thread.Sleep(20000);
+            currentUser = this.getCurrentUser();
+            while ((currentUser == null || currentUser.Equals("System")) & count < timeout)
+            {
+                ++count;
+                System.Threading.Thread.Sleep(10000);
+
+                try
+                {
+                    currentUser = this.getCurrentUser();
+                }
+                catch (Exception e)
+                {
+                    //Returned error, inconsequential for now, define various types of exceptions later
+                    // Retry
+                }
+            }
+            Console.WriteLine("Logon complete with user {0}", currentUser);
         }
+
+        //public void waitForWorkGroupLogon(int timeout)
+        //{
+        //    waitForLogon(String.Concat(this.name, "\\", this.domainAdmin), timeout);
+        //}
+
+        //public void waitForDomainLogon(int timeout)
+        //{
+        //    waitForLogon(String.Concat(this.joinDomain, "\\", this.domainAdmin), timeout);
+        //}
 
         public string getCurrentUser() 
         {            
@@ -592,7 +634,7 @@ namespace VirtualLib
                 }
 
                 try
-                {
+                {                    
                     virtualMachine.LoginInGuest("administrator", this.workGroupPassword);
                 }
                 catch (Exception e)
@@ -670,7 +712,8 @@ namespace VirtualLib
         public void getePOLogs()
         {
         }
-        public bool copyRequiredFilesToVM(string ePOZip, string agentZip, string testZip, string zipExe)
+
+        public bool copyRequiredFilesToVM(string ePOZip, string agentZip, string testZip, string zipExe, string compExe)
         {
             //Files to copy
             // 1. ePO Build
@@ -683,12 +726,13 @@ namespace VirtualLib
             {
                 //virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
                 virtualMachine.LoginInGuest("administrator", this.workGroupPassword);
-                if (File.Exists(ePOZip) && File.Exists(agentZip) && File.Exists(zipExe) && File.Exists(zipExe))
+                if (File.Exists(ePOZip) && File.Exists(agentZip) && File.Exists(zipExe) && File.Exists(zipExe) && File.Exists(compExe))
                 {
                     virtualMachine.CopyFileFromHostToGuest(ePOZip, @"c:\epo.zip");
                     virtualMachine.CopyFileFromHostToGuest(agentZip, @"C:\agent.zip");
                     virtualMachine.CopyFileFromHostToGuest(zipExe, @"C:\uzext.exe");
                     virtualMachine.CopyFileFromHostToGuest(testZip, @"C:\test.zip");
+                    virtualMachine.CopyFileFromHostToGuest(compExe, @"c:\uzcomp.exe");
                     System.Threading.Thread.Sleep(5000);
 
                     //Construct batchfile for unzipping
@@ -719,30 +763,6 @@ namespace VirtualLib
             }
         }
 
-        public void startAgent()
-        {
-            string batchFilePath = @"f:\autoinstallproject\temp\runagent.bat";
-
-            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
-            {
-                virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
-                //string runAgentBatch = @"start c:\agent\agent.exe c:\agent\agent.conf";
-                string runAgentBatch = "c:\\psexec.exe -d -u \"epontlmv2\\administrator\" -p \"Yv74aL5j\" c:\\agent\\agent.exe c:\\agent\\agent.conf";
-
-                System.IO.FileInfo fi = new System.IO.FileInfo(batchFilePath);
-                StreamWriter sw = fi.CreateText();
-                sw.WriteLine(runAgentBatch);                
-                sw.Close();
-
-                virtualMachine.CopyFileFromHostToGuest(batchFilePath, @"c:\runagent.bat");
-                virtualMachine.RunProgramInGuest(@"c:\runagent.bat");
-                //wait 5 seconds for agent to start
-                System.Threading.Thread.Sleep(5000);
-                virtualMachine.LogoutFromGuest();
-            }
-        }
-
-
         public bool isLoggedIn()
         {
             bool directoryExists = false;
@@ -770,39 +790,32 @@ namespace VirtualLib
             }
         }
 
-
-        public bool login()
-        {
-            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
-            {                
-                if (virtualMachine.IsRunning)
-                {
-                    virtualMachine.WaitForToolsInGuest();
-                    //virtualMachine.LoginInGuest(this.getJoinDomain().Split(new char[] { '.' })[0] + "\\" + this.getDomainAdmin(), this.getDomainPassword());
-                    virtualMachine.LoginInGuest(this.joinDomain + "\\" + this.domainAdmin, this.domainPassword);
-                    //Wait a period for login to complete
-                    System.Threading.Thread.Sleep(10000);
-                    return true;
-                }
-                return false;
-            }
-        }
-
-        public void powerOn()
-        {                       
-            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation,20))
-            {
-                // power on this virtual machine
-                if (!virtualMachine.IsRunning)
-                {
-                    virtualMachine.PowerOn();                    
-                }
-            }
-        }
-
         public bool deploy()
         {
             return hostRef.deploy(this);
+        }
+
+        public void copyLogsToHost(string guestLogZip, string hostLogZip)
+        {
+            using (VMWareVirtualMachine virtualMachine = hostRef.vixhost.Open(this.storageLocation, 20))
+            {
+                if (virtualMachine.IsRunning)
+                {
+                    virtualMachine.LoginInGuest(this.domainAdmin, this.domainPassword);
+                    virtualMachine.WaitForToolsInGuest();
+                    
+                    //Check for existence of logs directory
+                    bool directoryExists = virtualMachine.FileExistsInGuest(guestLogZip);
+
+                    if (directoryExists)
+                    {
+                        virtualMachine.CopyFileFromGuestToHost(guestLogZip, hostLogZip);
+                    }
+
+
+                    virtualMachine.LogoutFromGuest();
+                }                
+            }
         }
 
     }
@@ -857,9 +870,11 @@ namespace VirtualLib
                     // Build reg file to change autologon settings to domain
                     string deleteKey = "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /f";
                     string addKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"DefaultDomainName\" /t REG_SZ /d " + this.joinDomain.Split(new char[] { '.' })[0];
-                    string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    //string disableScreenSaverKey = "reg add \"HKCU\\Control Panel\\Desktop\" /v \"ScreenSaveActive\" /t REG_SZ /d 0 /f";
+                    string disableScreenSaverKey = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"ScreenSaveDisable\" /t REG_SZ /d \"reg add \\\"HKCU\\Control Panel\\Desktop\\\" /v \\\"ScreenSaveActive\\\" /t REG_SZ /d 0 /f\"";
                     //string startAgent = "cmd /C \"start c:\\agent\\agent.exe c:\\agent\\agent.conf";
                     string startAgent = "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v \"StartAgent\" /t REG_SZ /d \"cmd /C start c:\\agent\\agent.exe c:\\agent\\agent.conf";
+                    string sqlAdminAdd = "sqlcmd -S localhost\\SQL2008 -U sa -P sa -Q \"EXEC master..sp_addsrvrolemember @loginame = N'" + this.joinDomain.Split(new char[] { '.' })[0] + "\\" + this.domainAdmin + "', @rolename = N'sysadmin'\"";
                     //string shutdownKey = "shutdown -r -t 10 -c \"Rebooting computer\"";
                     string shutdownKey = "netdom join localhost /domain:" + this.joinDomain + " /userd:" + this.domainAdmin + " /passwordd:" + this.domainPassword + " /REboot:10";
 
@@ -870,8 +885,8 @@ namespace VirtualLib
                     sw.WriteLine(addKey);
                     sw.WriteLine(disableScreenSaverKey);
                     sw.WriteLine(startAgent);
-                    sw.WriteLine(shutdownKey);
-                    sw.WriteLine(disableScreenSaverKey);
+                    sw.WriteLine(sqlAdminAdd);                    
+                    sw.WriteLine(shutdownKey);                    
                     sw.Close();
 
                     //Copy said file guest
